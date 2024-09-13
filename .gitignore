@@ -1,0 +1,8 @@
+data
+.env
+.idea
+out
+.ipynb_checkpoints
+src/debugging
+src/covews
+

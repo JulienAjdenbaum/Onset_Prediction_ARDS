@@ -1,0 +1,108 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{subcaption}
+\usepackage{subfiles}
+\usepackage{multicol}
+\usepackage{tcolorbox}
+\usepackage{enumitem}
+\usepackage{ragged2e}
+\usepackage{listings}
+
+\newtcolorbox{medicalnote}[4]{colback=white,
+    colframe=gray,
+    listing only,
+    title={
+        \justifying
+        \begin{tabular}{ll}
+            \textbf{#1}: #2 \\[4pt]
+            \quad \textbf{Time:} & #3 \\
+            \quad \textbf{Done by:} & #4          \\
+        \end{tabular}
+    }
+}
+
+\newtcolorbox{llmresult}[2]{colback=white,
+    colframe=gray,
+    listing only,
+    title={
+        \justifying
+        \begin{tabular}{ll}
+            LLM Result: \\[4pt]
+            \quad \textbf{Time:} & #1 \\
+            \quad \textbf{Confidence:} & #2 \\
+        \end{tabular}
+    }
+}
+
+\newenvironment{compactitemize}
+ {\begin{itemize}[noitemsep,topsep=0pt,parsep=0pt,partopsep=0pt]}
+ {\end{itemize}}
+
+% \input{patient_data.tex}
+
+% Set page margins
+\geometry{margin=2cm}
+\lstset{
+  breaklines=true,
+  breakatwhitespace=true,
+  basicstyle=\ttfamily\small,
+  columns=flexible,
+  keepspaces=true
+}
+\begin{document}
+
+\hrule
+\begin{center}
+    \Large\textbf{Patient Card}
+\end{center}
+\hrule
+
+\vspace{1cm}
+
+\subfile{sections/lllm_results}
+
+% \centering
+
+\vspace{1cm}
+
+\subfile{sections/intro}
+
+\vspace{0.5cm}
+
+\begin{multicols}{2}
+
+\justifying\textbf{Diagnoses:} \\
+\subfile{sections/diagnoses}
+
+\columnbreak
+
+\justifying\textbf{Analysis Parameters:} \\
+
+\subfile{sections/analysis_parameters}
+
+\end{multicols}
+
+% \vspace{1cm}
+% \textbf{Features kept:}
+\centering
+\begin{tcolorbox}[colback=white,colframe=gray,title={\centering\textbf{Features kept:}}]
+\centering
+\subfile{sections/features}
+\end{tcolorbox}
+
+
+% \subfile{sections/features}
+
+\vspace{1cm}
+
+\subfile{sections/plots}
+
+\vspace{1cm}
+
+\subfile{sections/notes}
+
+\end{document}
