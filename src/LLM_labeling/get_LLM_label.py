@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-from sqlalchemy import create_engine
 import os
 import json
 from openai import OpenAI
@@ -10,7 +9,10 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 from datetime import timedelta
 import re
+from src.utils.patient import Patient
+from src.utils.db_utils import run_query
 
+load_dotenv()
 
 @dataclass
 class ARDSOnsetResponse:
@@ -69,14 +71,7 @@ class Sentence(BaseModel):
 class PrivacySentences(BaseModel):
     sentences: list[Sentence]
 
-# information used to create a database connection
-sqluser = 'postgres'
-dbname = 'mimic'
-schema_name = 'mimiciii'
 
-engine = create_engine(f'postgresql://{sqluser}:{sqluser}@localhost/{dbname}')
-
-query_schema = 'set search_path to ' + schema_name + ';'
 caregivers = {}
 
 prompt = """
@@ -129,14 +124,14 @@ Please analyze these notes to determine the onset of ARDS as per the instruction
 """
 
 def get_patient_idm_date(hadm_id):
-    query = query_schema + """
+    query = """
             SELECT admittime
             FROM ADMISSIONS
-            WHERE hadm_id = {hadm_id}
+            WHERE hadm_id = %(hadm_id)s
             LIMIT 1
         """
-
-    df = pd.read_sql_query(query.format(hadm_id=hadm_id), engine)
+    df = run_query(query, {"hadm_id": hadm_id})
+    # print(df)
     return df["admittime"].iloc[0]
 
 
@@ -147,37 +142,38 @@ def load_patient_data(config_path):
 
 
 def get_patients_notes(hadm_id, start_time=None):
-    query = query_schema + """
+    query = """
         SELECT charttime, text
         FROM NOTEEVENTS
-        WHERE hadm_id = {hadm_id}
+        WHERE hadm_id = %(hadm_id)s
     """
-
-    df = pd.read_sql_query(query.format(hadm_id=hadm_id), engine)
+    df = run_query(query, {"hadm_id": hadm_id})
     if start_time is None:
         df["charttime"] = df["charttime"] - get_patient_idm_date(hadm_id)
     else:
-        df["charttime"] = df["charttime"] - start_time
-    return map(str, df["charttime"]), df["text"]
+        df["charttime"] = df["charttime"] - start_time.values[0]
+    # print(df)
+    return list(map(str, df["charttime"])), df["text"]
 
-def get_LLM_result(patient_dir, hadm_id, start_time=None):
-    if os.path.exists(os.path.join(patient_dir, "OpenAI.json")) and False:
+def get_LLM_result(patient):
+    if os.path.exists(os.path.join(patient.save_path, "OpenAI.json")):
         print("OpenAI JSON found")
-        with open(os.path.join(patient_dir, "OpenAI.json"), 'r') as f:
+        with open(os.path.join(patient.save_path, "OpenAI.json"), 'r') as f:
             ards_response = json.load(f)
     else:
         print("No OpenAI JSON found")
-        ards_response = send_request(hadm_id, start_time).to_dict()
-        with open(os.path.join(patient_dir, "OpenAI.json"), "w") as f:
+        ards_response = send_request(patient).to_dict()
+        with open(os.path.join(patient.save_path, "OpenAI.json"), "w") as f:
             json.dump(ards_response, f, indent=4)
     return ards_response
 
 
-def send_request(hadm_id, start_time=None):
-    times, texts = get_patients_notes(hadm_id, start_time)
+def send_request(patient):
+    times, texts = get_patients_notes(patient.hadm_id, patient.time_start)
+    patient.save_notes(times, texts)
     notes_dict = dict(zip(times, texts))
+
     client = OpenAI()
-    # print(prompt)
 
     chunk_text = "medical_notes = {"
     for time in notes_dict:
@@ -185,6 +181,7 @@ def send_request(hadm_id, start_time=None):
         chunk_text += notes_dict[time]
         chunk_text += f"\"\"\",\n"
     chunk_text += "}\n"
+
     # print(chunk_text)
 
     response = client.beta.chat.completions.parse(
@@ -199,35 +196,17 @@ def send_request(hadm_id, start_time=None):
         # max_tokens=4096
     )
     results = response.choices[0].message
-    # print(results)
-    # print(results.content)
-    # print(json.loads(results.content)['sentences'])
-    print(results.content)
     ards_response = ARDSOnsetResponse.from_api_response(results.content)
 
     # Now you can access the structured data
-    # print(ards_response.onset_timestamp)
-    # print(ards_response.evidence)
-    # print(ards_response.confidence)
-    # print(ards_response.additional_notes)
     return ards_response
 
 
 if __name__ == "__main__":
-    load_dotenv()
-    home = "/home/julien/Documents/stage"
-    save_dir = "data/MIMIC/cohorts_new"
-    for patient_unique_dir in os.listdir(save_dir):
-        for patient_dir_last in os.listdir(os.path.join(save_dir, patient_unique_dir)):
-            patient_dir = os.path.join(save_dir, patient_unique_dir, patient_dir_last)
-            try:
-                patient_data = load_patient_data(os.path.join(patient_dir, "saves", "config.json"))
-            except FileNotFoundError:
-                warnings.warn(f"Skipping bc file not found : {os.path.join(patient_dir, 'saves', 'config.json')}")
-                continue
-            hadm_id = patient_data["hadm_id"]
-            # times, texts = get_patients_notes(hadm_id)
-            # notes_dict = dict(zip(times, texts))
-            get_LLM_result(patient_dir, hadm_id)
-            break
+    project_dir = "/home/julien/Documents/stage/data/MIMIC/cohorts_new"
+    patients_list_df = pd.read_csv(os.path.join(project_dir, "patients.csv"))
+    for index, row in patients_list_df.iterrows():
+        patient = Patient.load(project_dir, str(row["subject_id"]), str(row["hadm_id"]))
+        run_PCA = True
+        get_LLM_result(patient)
         break
