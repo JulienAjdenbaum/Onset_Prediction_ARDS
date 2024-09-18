@@ -162,9 +162,13 @@ def get_LLM_result(patient):
             ards_response = json.load(f)
     else:
         print("No OpenAI JSON found")
-        ards_response = send_request(patient).to_dict()
-        with open(os.path.join(patient.save_path, "OpenAI.json"), "w") as f:
-            json.dump(ards_response, f, indent=4)
+        try:
+            ards_response = send_request(patient).to_dict()
+            with open(os.path.join(patient.save_path, "OpenAI.json"), "w") as f:
+                json.dump(ards_response, f, indent=4)
+        except Exception as e:
+            print(f"Rate limit error : {e}")
+            return {"onset_timestamp": "None", "confidence": "None",}
     return ards_response
 
 
@@ -183,7 +187,6 @@ def send_request(patient):
     chunk_text += "}\n"
 
     # print(chunk_text)
-
     response = client.beta.chat.completions.parse(
         model="gpt-4o",
         messages=[{"role": "system",

@@ -87,12 +87,30 @@ def generate_patient_plot(patient, ARDS_onset_time, show, left_bar=None, right_b
     # return ax1
 
 
-def run_patient_preprocessing(patient:Patient, run_PCA=False, plot=False):
+def run_patient_preprocessing(patient:Patient, run_PCA=False, plot=False, columns_to_keep=None):
+    print(patient.subject_id)
+
     limit_n_columns = True
     if run_PCA:
         limit_n_columns = False
 
     df = patient.raw_df.copy()
+    # print(df)
+    # print(columns_to_keep)
+    columns_to_keep_in_df = []
+    for key in columns_to_keep:
+        if key in df.columns:
+            columns_to_keep_in_df.append(key)
+    # print(columns_to_keep_in_df)
+    # print(list(df.columns))
+
+    if columns_to_keep is not None:
+        df = df[columns_to_keep_in_df + ["time", "patient_id"]]
+        # print(df)
+        df = df.drop_duplicates(subset="time", keep="last")
+        # print(df)
+        df = df.drop_duplicates(subset=columns_to_keep_in_df, keep="last")
+    # print(df)
     df['row_number'] = df.groupby('patient_id').cumcount()
 
     stay_duration = df["time"].iloc[-1]
@@ -155,7 +173,7 @@ def run_patient_preprocessing(patient:Patient, run_PCA=False, plot=False):
     config["analysis_parameters"]["first_valid_index"] = int(first_valid_index)
     config["string_columns"] = list(string_columns)
     config["analysis_parameters"]["number_of_change_times"] = min_change_times
-
+    # print(df)
     patient.save_config(config)
     patient.save_processed_df(df)
 
@@ -163,12 +181,10 @@ def run_patient_preprocessing(patient:Patient, run_PCA=False, plot=False):
 # @profile
 def run_patient_encounter(patient, plot=False, run_PCA=True):
     print(f"Starting patient : {patient.subject_id}, encounter {patient.hadm_id}")
+
     df = patient.get_processed_df()
-
-    # df_interest_start = max(30, int(len(df) * 0.01))
     df_interest_start = int(df["time"].iloc[0])
-    window_length_fit = max(30, int(len(df) * 0.05))
-
+    window_length_fit = max(min(5, len(df)), int(len(df) * 0.05))
     print(f"df_interest_start: {df_interest_start}, window_length: {window_length_fit}")
 
     non_medical_columns = ["index", "time", "patient_id", "row_number"]
@@ -183,6 +199,10 @@ def run_patient_encounter(patient, plot=False, run_PCA=True):
     except ValueError:
         warnings.warn(f"Skipping patient {patient.subject_id} encounter {patient.hadm_id} bc this fit data is invalid")
         return 0
+
+    df_final = pd.DataFrame(scaler.transform(df_patient_medical_data.copy()), columns=fit_keys)
+    df_final["time"] = df["time"]
+    patient.save_final_df(df_final)
 
     # PCA step
     n_pca_components = min(10, len(fit_keys))  # Set to 10 or the number of available features, whichever is smaller
@@ -234,11 +254,13 @@ def run_patient_encounter(patient, plot=False, run_PCA=True):
 
     step = int(0.2 * window_length)
     idx_where_to_compute_score = range(0, len_scores, step)
+    time_of_scores = [0] * len(idx_where_to_compute_score)
     scores = [0] * len(idx_where_to_compute_score)
 
     for i in idx_where_to_compute_score:
         data_to_score = df_patient_medical_data.iloc[df_interest_start + i:df_interest_start + i + window_length]
         data_to_score = scaler.transform(data_to_score)
+        time_of_scores[i // step] = df["time"].iloc[df_interest_start + i+window_length//2]
         if run_PCA:
             data_to_score = pca.transform(data_to_score)
             scores[i // step] = my_score(data_to_score, gm)
@@ -288,7 +310,7 @@ def run_patient_encounter(patient, plot=False, run_PCA=True):
                           right_bar=df["time"].iloc[df_interest_start + window_length_fit])
 
     patient.save_scores(scores)
-    patient.save_times(df["time"])
+    patient.save_times(time_of_scores)
 
     # np.save(os.path.join(patient.save_path, f"scores.npy"), scores)
     # np.save(os.path.join(patient.save_path, f"times.npy"), df["time"].iloc[idx_where_to_compute_score])
@@ -300,9 +322,9 @@ def run_patient_encounter(patient, plot=False, run_PCA=True):
     config["analysis_parameters"]["window_length_fit"] = window_length_fit
     config["analysis_parameters"]["n_components"] = n_components
     if run_PCA:
-        config["analysis_parameters"]["method"] = "GMM with PCA"
+        config["analysis_parameters"]["method"] = "models with PCA"
     else:
-        config["analysis_parameters"]["method"] = "GMM without PCA"
+        config["analysis_parameters"]["method"] = "models without PCA"
     config["analysis_parameters"]["window_length"] = window_length
     config["len_scores"] = len_scores
     config["ards_onset_time"] = ARDS_onset_time
@@ -313,9 +335,11 @@ def run_patient_encounter(patient, plot=False, run_PCA=True):
 if __name__ == "__main__":
     project_dir = "/home/julien/Documents/stage/data/MIMIC/cohorts_new"
     patients_list_df = pd.read_csv(os.path.join(project_dir, "patients.csv"))
+    columns_to_keep = ["Heart Rate", "SpO2", "Respiratory Rate", "NBP Mean", "NBP [Systolic]", "NBP [Diastolic]",
+                    "Temperature F"]
     for index, row in patients_list_df.iterrows():
         patient = Patient.load(project_dir, str(row["subject_id"]), str(row["hadm_id"]))
         run_PCA = False
-        run_patient_preprocessing(patient, run_PCA=run_PCA)
+        run_patient_preprocessing(patient, run_PCA=run_PCA, columns_to_keep=columns_to_keep)
         run_patient_encounter(patient, plot=False, run_PCA=run_PCA)
         print()

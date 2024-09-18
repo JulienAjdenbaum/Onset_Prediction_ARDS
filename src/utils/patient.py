@@ -59,13 +59,17 @@ class Patient:
 
         rows = []
 
-        for index, row in df.iterrows():
-            # print(row)
-            time_feature = (row["charttime"] - self.time_start).total_seconds() / 3600
-            label = row["label"]
-            value = row["value"]
+        for time in np.unique(df["charttime"]):
+            time_feature = (time - self.time_start).total_seconds() / 3600
             rows.append(({"patient_id": self.subject_id, "hadm_id": self.hadm_id,
                           "time": time_feature, label: value}))
+            rows_list = df[df["charttime"] == time]
+
+            for index, row in rows_list.iterrows():
+                time_feature = (row["charttime"] - self.time_start).total_seconds() / 3600
+                label = row["label"]
+                value = row["value"]
+
 
         df = pd.DataFrame(rows).sort_values(by="time").reset_index(drop=True)
         self.raw_df = df.ffill()
@@ -110,9 +114,15 @@ class Patient:
         self.scores  = scores
         np.save(os.path.join(self.save_path, "scores.npy"), scores)
 
+    def get_scores(self):
+        self.scores = np.load(os.path.join(self.save_path, "scores.npy"))
+
     def save_times(self, times):
         self.times  = times
         np.save(os.path.join(self.save_path, "times.npy"), times)
+
+    def get_times(self):
+        self.times = np.load(os.path.join(self.save_path, "times.npy"))
 
     def get_processed_df(self):
         if self.processed_df is None:
@@ -149,8 +159,14 @@ class Patient:
             "times": self.note_times,
             "texts": self.note_texts
         })
-
         self.df_notes.to_csv(os.path.join(self.save_path, "df_notes.csv"), index=False)
+
+    def get_notes(self):
+        df_notes = pd.read_csv(os.path.join(self.save_path, "df_notes.csv"))
+        self.note_times = df_notes["times"]
+        self.note_texts = df_notes["texts"]
+
+
     def get_existing_config(self):
         if os.path.exists(os.path.join(self.save_path, f"config.json")):
             with open(os.path.join(self.save_path, f"config.json"), "r") as f:
@@ -163,6 +179,14 @@ class Patient:
     def save_config(self, config):
         with open(os.path.join(self.save_path, f"config.json"), "w") as f:
             json.dump(config, f, indent=4)
+
+    def save_final_df(self, df):
+        self.final_df = df
+        df.to_csv(os.path.join(self.save_path, "final_df.csv"), index=False)
+
+    def get_final_df(self):
+        self.final_df = pd.read_csv(os.path.join(self.save_path, "final_df.csv"))
+        return self.final_df
 
     def __repr__(self):
         return f"Patient(patient_id={self.patient_id}, encounter_id={self.encounter_id}, hadm_id={self.hadm_id})"

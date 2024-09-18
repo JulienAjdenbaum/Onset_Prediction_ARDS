@@ -7,3 +7,6 @@ src/debugging
 src/covews
 src/utils/__pycache__
 src/LLM_labeling/__pycache__/get_LLM_label.cpython-310.pyc
+cohort.csv
+samples_after.npy
+samples_before.npy

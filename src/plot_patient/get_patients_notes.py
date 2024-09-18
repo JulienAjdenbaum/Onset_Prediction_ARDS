@@ -10,7 +10,7 @@ import json
 import concurrent.futures
 import math
 
-# from src.GMM.GMM_MIMIC import patient_id
+# from src.models.GMM_MIMIC import patient_id
 
 # information used to create a database connection
 sqluser = 'postgres'

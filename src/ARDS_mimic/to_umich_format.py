@@ -55,6 +55,12 @@ if __name__ == '__main__':
     save_path = "data/MIMIC/cohorts_new/"
     # ARDS_list = ('51881', '51882', '51884', '51851', '51852', '51853', '769')
     ARDS_list = ('51882', 'None')
+
+    # TODO
+    # Matt : 5185 12882
+    # Other studies : other non ARDS codes -> they just predict the Pf ratio PEEP and radiology reports
+    # Look at the sampling frequency of PEEP and P/F ratios when they are available
+
     if os.path.exists(save_path):
         shutil.rmtree(save_path)
     os.mkdir(save_path)
