@@ -1,5 +1,5 @@
 import json
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 import pandas as pd
 
 
@@ -40,17 +40,60 @@ def run_query(query: str, params: dict, schema_name: str = db_config['schema_nam
             raise
     return df
 
-if __name__ == '__main__':
-    # Define query and parameters
-    query = """
-        SELECT long_title
-        FROM DIAGNOSES_ICD
-        JOIN D_ICD_DIAGNOSES ON DIAGNOSES_ICD.icd9_code = D_ICD_DIAGNOSES.icd9_code
-        WHERE subject_id = %(subject_id)s AND hadm_id = %(hadm_id)s
+def create_cohort_table(icd9_codes, batch_size=100000):
+    icd9_str = ', '.join(f"'{code}'" for code in icd9_codes)
+
+    with engine.connect() as conn:
+        query = f"""
+        SELECT COUNT(*)
+        FROM CHARTEVENTS ce
+        JOIN DIAGNOSES_ICD di
+          ON ce.hadm_id = di.hadm_id
+        WHERE di.icd9_code IN ({icd9_str})
         """
 
-    params = {'subject_id': 117, 'hadm_id': 164853}
+        result = conn.execute(text(query))
+        print(f"There is {result.scalar()} rows to run.")
 
-    # Call the function
-    df = run_query(query, params)
-    print(df.head())
+    offset = 0
+    while True:
+        # Query the DIAGNOSES_ICD and CHARTEVENTS for a batch
+        with engine.connect() as conn:
+            query = f"""
+            INSERT INTO CHARTEVENTS_COHORTS
+            SELECT ce.subject_id, ce.hadm_id, ce.charttime, ce.itemid, ce.value
+            FROM CHARTEVENTS ce
+            JOIN DIAGNOSES_ICD di
+              ON ce.hadm_id = di.hadm_id
+            WHERE di.icd9_code IN ({icd9_str})
+            LIMIT {batch_size} OFFSET {offset};
+            """
+            # Execute the query
+            result = conn.execute(text(query))
+
+            # If no rows were returned, stop the loop
+            if result.rowcount == 0:
+                break
+
+            # Increase the offset for the next batch
+            offset += batch_size
+            print(f"Processed batch starting from offset {offset}")
+            conn.commit()
+
+if __name__ == '__main__':
+    codes = ('51881', '51882', '51884', '5185', '51851')
+    create_cohort_table(codes)
+    # Define query and parameters
+    # query = """
+    #     SELECT long_title
+    #     FROM DIAGNOSES_ICD
+    #     JOIN D_ICD_DIAGNOSES ON DIAGNOSES_ICD.icd9_code = D_ICD_DIAGNOSES.icd9_code
+    #     WHERE subject_id = %(subject_id)s AND hadm_id = %(hadm_id)s
+    #     """
+
+    # params = {'subject_id': 117, 'hadm_id': 164853}
+    #
+    # # Call the function
+    # df = run_query(query, params)
+    # print(df.head())
+

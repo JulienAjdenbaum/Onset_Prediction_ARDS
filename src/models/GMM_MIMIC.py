@@ -12,7 +12,11 @@ import json
 from matplotlib.animation import FuncAnimation
 from src.LLM_labeling.get_LLM_label import get_LLM_result
 from src.utils.patient import Patient
-
+import concurrent.futures
+from functools import partial
+import time
+import cProfile
+import pstats
 
 def nan_percentage(column):
     return column.isna().mean() * 100
@@ -89,32 +93,31 @@ def generate_patient_plot(patient, ARDS_onset_time, show, left_bar=None, right_b
 
 def run_patient_preprocessing(patient:Patient, run_PCA=False, plot=False, columns_to_keep=None):
     print(patient.subject_id)
-
     limit_n_columns = True
     if run_PCA:
         limit_n_columns = False
 
     df = patient.raw_df.copy()
-    # print(df)
+
+    # print(list(df.columns))
     # print(columns_to_keep)
     columns_to_keep_in_df = []
     for key in columns_to_keep:
         if key in df.columns:
             columns_to_keep_in_df.append(key)
+
     # print(columns_to_keep_in_df)
     # print(list(df.columns))
 
     if columns_to_keep is not None:
-        df = df[columns_to_keep_in_df + ["time", "patient_id"]]
-        # print(df)
-        df = df.drop_duplicates(subset="time", keep="last")
-        # print(df)
-        df = df.drop_duplicates(subset=columns_to_keep_in_df, keep="last")
-    # print(df)
-    df['row_number'] = df.groupby('patient_id').cumcount()
+        df = df[columns_to_keep_in_df + ["time"]]
+
+        df = df.drop_duplicates(subset=columns_to_keep_in_df, keep="first")
+
+    # df['row_number'] = df.cumcount()
 
     stay_duration = df["time"].iloc[-1]
-    number_of_measurements = df["row_number"].iloc[-1]
+    number_of_measurements = len(df)
 
     initial_keys = df.keys()
 
@@ -180,14 +183,14 @@ def run_patient_preprocessing(patient:Patient, run_PCA=False, plot=False, column
 
 # @profile
 def run_patient_encounter(patient, plot=False, run_PCA=True):
-    print(f"Starting patient : {patient.subject_id}, encounter {patient.hadm_id}")
+    # print(f"Starting patient : {patient.subject_id}, encounter {patient.hadm_id}")
 
     df = patient.get_processed_df()
     df_interest_start = int(df["time"].iloc[0])
     window_length_fit = max(min(5, len(df)), int(len(df) * 0.05))
-    print(f"df_interest_start: {df_interest_start}, window_length: {window_length_fit}")
+    # print(f"df_interest_start: {df_interest_start}, window_length: {window_length_fit}")
 
-    non_medical_columns = ["index", "time", "patient_id", "row_number"]
+    non_medical_columns = ["index", "time"]
     df_patient_medical_data = df.drop(non_medical_columns, axis=1)
 
     fit_data = df_patient_medical_data.iloc[df_interest_start:df_interest_start + window_length_fit]
@@ -271,8 +274,8 @@ def run_patient_encounter(patient, plot=False, run_PCA=True):
         #     df_patient_medical_data.iloc[df_interest_start + i:df_interest_start + i + window_length]))
     hadm_id = patient.hadm_id
 
-    ARDS_onset_time = get_ARDS_onset_time(hadm_id, patient.save_path, patient.time_start)
-
+    # ARDS_onset_time = get_ARDS_onset_time(hadm_id, patient.save_path, patient.time_start)
+    ARDS_onset_time = None
     # print(min(df["time"]))
     # print(f"Actual start time: ", df["time"].iloc[0])
     # print(f"Fit start time: ", df["time"].iloc[df_interest_start])
@@ -331,15 +334,51 @@ def run_patient_encounter(patient, plot=False, run_PCA=True):
     patient.save_config(config)
 
 
+# Define a function to process each patient
+def process_patient(row, project_dir, columns_to_keep):
+    print(row["subject_id"])
+    patient = Patient.load(project_dir, str(row["subject_id"]), str(row["hadm_id"]))
+    run_PCA = False
+    run_patient_preprocessing(patient, run_PCA=run_PCA, columns_to_keep=columns_to_keep)
+    # run_patient_encounter(patient, plot=False, run_PCA=run_PCA)
+    # print()
 
-if __name__ == "__main__":
-    project_dir = "/home/julien/Documents/stage/data/MIMIC/cohorts_new"
+def main():
+    project_dir = "/home/julien/Documents/stage/data/MIMIC/mini_test"
     patients_list_df = pd.read_csv(os.path.join(project_dir, "patients.csv"))
     columns_to_keep = ["Heart Rate", "SpO2", "Respiratory Rate", "NBP Mean", "NBP [Systolic]", "NBP [Diastolic]",
-                    "Temperature F"]
+                       "Temperature F", 'PEEP Set', 'FiO2 Set', 'Arterial PaO2']
+
+    t = time.time()
+    # with concurrent.futures.ThreadPoolExecutor() as executor:
+    #     [executor.submit(process_patient, row, project_dir, columns_to_keep) for _, row in patients_list_df.iterrows()]
+
     for index, row in patients_list_df.iterrows():
+        print(row["subject_id"])
+        patient = Patient.load(project_dir, str(row["subject_id"]), str(row["hadm_id"]))
+        run_PCA = False
+        run_patient_preprocessing(patient, run_PCA=run_PCA, columns_to_keep=columns_to_keep)
+        # run_patient_encounter(patient, plot=False, run_PCA=run_PCA)
+        # print()
+    print(f"Total time : {time.time() - t}")
+
+if __name__ == "__main__":
+    project_dir = "/home/julien/Documents/stage/data/MIMIC/mini_test"
+    patients_list_df = pd.read_csv(os.path.join(project_dir, "patients.csv"))
+    columns_to_keep = ["Heart Rate", "SpO2", "Respiratory Rate", "NBP Mean", "NBP [Systolic]", "NBP [Diastolic]",
+                    "Temperature F", 'PEEP Set', 'FiO2 Set', 'PAO2']
+
+    t = time.time()
+    # with concurrent.futures.ThreadPoolExecutor() as executor:
+    #     [executor.submit(process_patient, row, project_dir, columns_to_keep) for _, row in patients_list_df.iterrows()]
+
+    for index, row in patients_list_df.iterrows():
+        # print(int(index)/len(patients_list_df)*100)
         patient = Patient.load(project_dir, str(row["subject_id"]), str(row["hadm_id"]))
         run_PCA = False
         run_patient_preprocessing(patient, run_PCA=run_PCA, columns_to_keep=columns_to_keep)
         run_patient_encounter(patient, plot=False, run_PCA=run_PCA)
-        print()
+    # if __name__ == "__main__":
+    #     cProfile.run('main()', 'profile_output')
+    #     p = pstats.Stats('profile_output')
+    #     p.strip_dirs().sort_stats('time').print_stats(20)  # Print top 20 time-consuming lines

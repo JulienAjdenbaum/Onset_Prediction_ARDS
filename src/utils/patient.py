@@ -6,6 +6,8 @@ import datetime
 import warnings
 import numpy as np
 # /home/julien/Documents/stage/data/MIMIC/cohorts_new/20587/100108/data/raw_df.csv
+pd.set_option('display.max_columns', None)
+
 
 def timestamp_to_string(timestamp):
     """
@@ -41,12 +43,11 @@ class Patient:
         self.diagnoses = get_diagnoses(self.hadm_id)
         self.processed_df = None
 
-        if not os.path.exists(os.path.join(root_path, str(self.subject_id))):
-            os.makedirs(os.path.join(root_path, str(self.subject_id)))
-        if not os.path.exists(self.main_path):
-            os.makedirs(self.main_path)
-        if not os.path.exists(self.save_path):
-            os.makedirs(self.save_path)
+        if os.path.exists(self.main_path):
+            print("Patient file already exists, skipping")
+            return None
+
+        os.makedirs(self.save_path, exist_ok=True)
 
         if is_load:
             self.raw_df = pd.read_csv(os.path.join(self.save_path, "raw_df.csv"), low_memory=False)
@@ -56,23 +57,19 @@ class Patient:
             return
 
         self.time_start = df["charttime"].min()
+        # print(df)
+        # print(df.keys())
 
-        rows = []
+        df["time"] = (df["charttime"] - self.time_start).dt.total_seconds() / 3600
 
-        for time in np.unique(df["charttime"]):
-            time_feature = (time - self.time_start).total_seconds() / 3600
-            rows.append(({"patient_id": self.subject_id, "hadm_id": self.hadm_id,
-                          "time": time_feature, label: value}))
-            rows_list = df[df["charttime"] == time]
+        df = df.drop(["subject_id", "hadm_id", "charttime"], axis=1).sort_values(by=["time"]).reset_index(
+            drop=True)
+        df_grouped = df.groupby("time").apply(
+            lambda x: x.pivot(columns="label", values="value")).ffill().reset_index()
+        df_grouped = df_grouped.groupby("time").tail(1).reset_index(drop=True)
 
-            for index, row in rows_list.iterrows():
-                time_feature = (row["charttime"] - self.time_start).total_seconds() / 3600
-                label = row["label"]
-                value = row["value"]
+        self.raw_df = df_grouped
 
-
-        df = pd.DataFrame(rows).sort_values(by="time").reset_index(drop=True)
-        self.raw_df = df.ffill()
         self.save_raw_df()
         self.save_infos()
         self.add_patient_to_global_df(root_path)
