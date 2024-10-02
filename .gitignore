@@ -11,3 +11,5 @@ cohort.csv
 samples_after.npy
 samples_before.npy
 profile_output
+src/models/__pycache__/logistic_regression.cpython-310-pytest-8.0.2.pyc
+.pyc

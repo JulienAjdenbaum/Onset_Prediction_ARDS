@@ -1,6 +1,10 @@
 import json
 import os
+from shutil import rmtree
+
 import pandas as pd
+from torch.nn.functional import selu_
+
 from src.utils.db_utils import run_query
 import datetime
 import warnings
@@ -35,7 +39,8 @@ def get_diagnoses(hadm_id):
 
 
 class Patient:
-    def __init__(self, df: pd.DataFrame, root_path, is_load=False):
+    def __init__(self, df: pd.DataFrame, root_path, is_load=False, globaldf_exists=False):
+        self.proxy_labels = None
         self.subject_id = int(df.iloc[0]["subject_id"])
         self.hadm_id = int(df.iloc[0]["hadm_id"])
         self.main_path = os.path.join(root_path, str(self.subject_id), str(self.hadm_id))
@@ -43,7 +48,7 @@ class Patient:
         self.diagnoses = get_diagnoses(self.hadm_id)
         self.processed_df = None
 
-        if os.path.exists(self.main_path):
+        if not is_load and os.path.exists(self.main_path):
             print("Patient file already exists, skipping")
             return None
 
@@ -53,7 +58,13 @@ class Patient:
             self.raw_df = pd.read_csv(os.path.join(self.save_path, "raw_df.csv"), low_memory=False)
             self.time_start = df["time_start"]
             if os.path.exists(os.path.join(self.save_path, "processed_df.csv")):
-                self.processed_df = pd.read_csv(os.path.join(self.save_path, "processed_df.csv"))
+                try:
+                    self.processed_df = pd.read_csv(os.path.join(self.save_path, "processed_df.csv"))
+                except pd.errors.EmptyDataError:
+                    print(f"Deleting patient {self.subject_id} hadm_id {self.hadm_id} bc there is no data in csv")
+                    self.del_patient()
+                    return None
+
             return
 
         self.time_start = df["charttime"].min()
@@ -72,7 +83,9 @@ class Patient:
 
         self.save_raw_df()
         self.save_infos()
-        self.add_patient_to_global_df(root_path)
+
+        if not globaldf_exists:
+            self.add_patient_to_global_df(root_path)
 
     def save_infos(self):
         """
@@ -131,9 +144,23 @@ class Patient:
         """
         Load the patient's data from the specified directory.
         """
-        # Load patient information
-        with open(os.path.join(root_dir, subject_id, hadm_id, "patient_info.json"), "r") as f:
-            patient_info = json.load(f)
+        try:
+            # Load patient information
+            # print(os.path.join(root_dir, subject_id, hadm_id, "patient_info.json"))
+
+            with open(os.path.join(root_dir, subject_id, hadm_id, "patient_info.json"), "r") as f:
+                patient_info = json.load(f)
+        except FileNotFoundError:
+            csv_path = os.path.join(root_dir, "patients.csv")
+            df_patients = pd.read_csv(csv_path)
+            # Ensure both df_patients['hadm_id'] and hadm_id are treated consistently as floats and then ints
+            try:
+                df_patients = df_patients[df_patients['hadm_id'].apply(lambda x: int(float(x))) != int(float(hadm_id))]
+            except ValueError:
+                pass
+            df_patients.to_csv(csv_path, index=False)
+            print(f"Deleted patient {subject_id} hadm_id {hadm_id} patient file not found")
+            return None
 
         patient_info = pd.DataFrame(patient_info)
         patient_info["time_start"] = string_to_timestamp(patient_info["time_start"])
@@ -166,6 +193,7 @@ class Patient:
 
     def get_existing_config(self):
         if os.path.exists(os.path.join(self.save_path, f"config.json")):
+            # print(self.save_path)
             with open(os.path.join(self.save_path, f"config.json"), "r") as f:
                 config = json.load(f)
                 if "analysis_parameters" not in config:
@@ -187,3 +215,15 @@ class Patient:
 
     def __repr__(self):
         return f"Patient(patient_id={self.patient_id}, encounter_id={self.encounter_id}, hadm_id={self.hadm_id})"
+
+    def del_patient(self, reason=None):
+        csv_path = os.path.join(os.path.dirname(os.path.dirname(self.main_path)), "patients.csv")
+        df_patients = pd.read_csv(csv_path)
+        df_patients = df_patients[df_patients['hadm_id'] != int(self.hadm_id)]
+        df_patients.to_csv(csv_path, index=False)
+        reason_string = f'because {reason}' if reason is not None else ''
+        if os.path.exists(os.path.dirname(self.main_path)):
+            rmtree(os.path.dirname(self.main_path))
+            print(f"Deleted patient {self.subject_id} hadm_id {self.hadm_id} {reason_string}")
+        else:
+            print(f"Could not delete patient {self.subject_id} hadm_id {self.hadm_id}, probably bc already deleted. Wanted to delete bc {reason_string}")

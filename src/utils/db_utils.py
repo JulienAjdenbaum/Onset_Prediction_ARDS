@@ -16,7 +16,6 @@ def create_db_engine(db_config):
     )
 
 
-# Example usage
 db_config = load_db_config()
 engine = create_db_engine(db_config)  # Create engine once
 

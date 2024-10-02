@@ -1,166 +1,199 @@
-import shutil
-import warnings
-import pandas as pd
 import numpy as np
-import os
-from sklearn.decomposition import PCA
-from sklearn.mixture import GaussianMixture
-import matplotlib.pyplot as plt
-from sklearn.preprocessing import StandardScaler
-import re
-import json
-from matplotlib.animation import FuncAnimation
-from src.LLM_labeling.get_LLM_label import get_LLM_result
-from src.utils.patient import Patient
+import pandas as pd
+from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import classification_report, roc_curve, roc_auc_score
+import matplotlib.pyplot as plt
+from imblearn.over_sampling import SMOTE
+from sklearn.impute import SimpleImputer
+from collections import Counter
+import os
+from src.utils.patient import Patient
 
-keys_number_dic = {}
-
-
-def get_keys(patient: Patient, keys_list):
-    config = patient.get_existing_config()
-    if "ards_onset_time" not in config:
-        return False
-    ards_onset_time = config["ards_onset_time"]
-    if ards_onset_time is None or ards_onset_time < 1:
-        return False
-    if "fit_keys" not in config.keys():
-        return False
-    keys = config["fit_keys"]
-    for key in keys_list:
-        if key not in keys:
-            return False
-    return True
-
-def to_diff(df, mode="diff"):
-    if mode == "diff":
-        df_diff = df.diff()[1:]
-        return df_diff.drop("time", axis=1).div(df_diff.time, axis=0)
+# Function to get processed patient data as difference vectors
+def to_diff(df, mode="concat"):
+    df_diff = df.diff()[1:]
     if mode == "concat":
-        df_diff = df.diff()[1:]
-        # print(df_diff)
-        return pd.concat([df.drop("time", axis=1)[1:], df_diff.drop("time", axis=1).div(df_diff.time, axis=0)],axis=1)
+        return pd.concat([df.drop("time", axis=1)[1:], df_diff.drop("time", axis=1).div(df_diff.time, axis=0)], axis=1)
     return df.drop("time", axis=1)
 
-
-
-def get_samples(subjects, patient_list_df, time_before_ARDS, time_after_ARDS):
-    project_dir = "/home/julien/Documents/stage/data/MIMIC/cohorts_new"
-    samples_before_ARDS = None
-    samples_after_ARDS = None
+# Function to get samples with a time window relative to ARDS onset
+def get_samples_with_time_window(subjects, patient_list_df, time_window):
+    project_dir = "/home/julien/Documents/stage/data/MIMIC/full"
+    positive_samples = []
+    negative_samples = []
 
     for subject_id in subjects:
         hadm_id = patient_list_df[patient_list_df["subject_id"] == subject_id]["hadm_id"].values[0]
         patient = Patient.load(project_dir, str(subject_id), str(hadm_id))
         config = patient.get_existing_config()
-        ards_onset_time = config["ards_onset_time"]
-        df_final = patient.get_final_df()
-        df_before = df_final[df_final["time"]<ards_onset_time-time_before_ARDS]
-        df_after = df_final[(df_final["time"]>ards_onset_time) & (df_final["time"]<ards_onset_time+time_after_ARDS) ]
-        print(f"{len(df_before)} samples before ARDS and {len(df_after)} samples after ARDS")
+        ards_onset_time = int(config["proxy_label"])
+        df_final = patient.get_processed_df()
 
-        if samples_before_ARDS is None:
-            samples_before_ARDS = to_diff(df_before)
-            # print(samples_before_ARDS.shape)
-            # print(samples_before_ARDS)
-        else:
-            samples_before_ARDS = np.concatenate((samples_before_ARDS, to_diff(df_before)), axis=0)
+        for i in range(len(df_final) - 1):
+            time = df_final.iloc[i]["time"]
+            time_plus_window = time + time_window
 
-        if samples_after_ARDS is None:
-            samples_after_ARDS = to_diff(df_after)
-        else:
-            samples_after_ARDS = np.concatenate((samples_after_ARDS, to_diff(df_after)), axis=0)
-    return samples_before_ARDS, samples_after_ARDS
+            # Negative samples: both time and time + window are before ARDS onset
+            if time_plus_window < ards_onset_time:
+                diff_vector = to_diff(df_final.iloc[i:i+2])
+                negative_samples.append(diff_vector.values.flatten())  # Flatten the array into 1D
 
-def get_cohort(patients_list_df, keys_to_keep):
-    project_dir = "/home/julien/Documents/stage/data/MIMIC/cohorts_new"
-    patient_list = []
-    for index, row in patients_list_df.iterrows():
-        patient = Patient.load(project_dir, str(row["subject_id"]), str(row["hadm_id"]))
-        config = patient.get_existing_config()
-        if get_keys(patient, keys_to_keep) and len(config["fit_keys"]) == len(keys_to_keep):
-            patient_list.append(patient.subject_id)
-    df = pd.DataFrame({"subject_id": patient_list})
-    df.to_csv("cohort.csv", index=False)
+            # Positive samples: time is before ARDS onset, but time + window is after onset
+            elif time < ards_onset_time and time_plus_window > ards_onset_time:
+                diff_vector = to_diff(df_final.iloc[i:i+2])
+                positive_samples.append(diff_vector.values.flatten())  # Flatten the array into 1D
 
+    return np.array(negative_samples), np.array(positive_samples)
 
-def run_logistic_regression(samples_before, samples_after):
-    X = np.vstack((samples_before, samples_after))
-    y = np.hstack((np.zeros(samples_before.shape[0]), np.ones(samples_after.shape[0])))
-    # X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    model = LogisticRegression()
-    model.fit(X, y)
-    return model
+# Function to scale features
+def scale_features(X_train, X_test):
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+    return X_train_scaled, X_test_scaled, scaler
 
+# Function to impute missing values
+def impute_missing_values(X_train, X_test):
+    imputer = SimpleImputer(strategy='mean')
+    X_train_imputed = imputer.fit_transform(X_train)
+    X_test_imputed = imputer.transform(X_test)
+    return X_train_imputed, X_test_imputed, imputer
 
+# Function to train the XGBoost classifier
+def run_xgboost_classifier(negative_samples, positive_samples):
+    X = np.vstack((negative_samples, positive_samples))
+    y = np.hstack((np.zeros(negative_samples.shape[0]), np.ones(positive_samples.shape[0])))
 
+    # Split data into training and validation sets
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-def test_logisitc_regression(subjects, patient_list_df, model, time_before_ARDS, time_after_ARDS):
-    project_dir = "/home/julien/Documents/stage/data/MIMIC/cohorts_new"
-    samples_before_ARDS = None
-    samples_after_ARDS = None
+    # Impute missing values (replace NaNs with the mean of the column)
+    X_train, X_val, imputer = impute_missing_values(X_train, X_val)
+
+    # Handle class imbalance with SMOTE
+    smote = SMOTE(random_state=42)
+    X_train, y_train = smote.fit_resample(X_train, y_train)
+
+    # Print class distribution after SMOTE
+    print('Resampled dataset shape %s' % Counter(y_train))
+
+    # Feature scaling
+    X_train_scaled, X_val_scaled, scaler = scale_features(X_train, X_val)
+
+    # Define the XGBoost classifier
+    model = XGBClassifier(
+        use_label_encoder=False,
+        eval_metric='logloss',
+        objective='binary:logistic',
+        n_estimators=2300,
+        max_depth=5,
+        learning_rate=0.1
+    )
+
+    # Train the model with early stopping on validation set
+    model.fit(
+        X_train_scaled, y_train,
+        eval_set=[(X_val_scaled, y_val)],  # Validation set for early stopping
+        verbose=True
+    )
+
+    return model, imputer, scaler
+
+# Function to test the model and plot the ROC AUC curve
+def test_xgboost_classifier(subjects, patient_list_df, model, imputer, scaler, time_window):
+    project_dir = "/home/julien/Documents/stage/data/MIMIC/full"
+    positive_samples = []
+    negative_samples = []
+
     for subject_id in subjects:
         hadm_id = patient_list_df[patient_list_df["subject_id"] == subject_id]["hadm_id"].values[0]
         patient = Patient.load(project_dir, str(subject_id), str(hadm_id))
         config = patient.get_existing_config()
-        ards_onset_time = config["ards_onset_time"]
-        df_final = patient.get_final_df()
-        df_diff = to_diff(df_final)
-        scores = model.predict_proba(df_diff)[:, 0]
-        df_before = df_final[df_final["time"]<ards_onset_time]
-        df_after = df_final[df_final["time"]>ards_onset_time]
-        print(f"{len(df_before)} samples before ARDS and {len(df_after)} samples after ARDS")
+        ards_onset_time = int(config["proxy_label"])
+        df_final = patient.get_processed_df()
 
-        if samples_before_ARDS is None:
-            samples_before_ARDS = to_diff(df_before)
-        else:
-            samples_before_ARDS = np.concatenate((samples_before_ARDS, to_diff(df_before)), axis=0)
+        for i in range(len(df_final) - 1):
+            time = df_final.iloc[i]["time"]
+            time_plus_window = time + time_window
 
-        if samples_after_ARDS is None:
-            samples_after_ARDS = to_diff(df_after)
-        else:
-            samples_after_ARDS = np.concatenate((samples_after_ARDS, to_diff(df_after)), axis=0)
+            # Negative samples: both time and time + window are before ARDS onset
+            if time_plus_window < ards_onset_time:
+                diff_vector = to_diff(df_final.iloc[i:i+2])
+                negative_samples.append(diff_vector.values.flatten())  # Flatten to ensure 2D
 
-        plt.plot(df_final["time"][:len(scores)], scores, label="score")
-        plt.axvline(ards_onset_time, linestyle="--", color="orange", label="ards_onset_time")
-        plt.axvspan(0, ards_onset_time-time_before_ARDS, alpha=0.3, color="green", label="Negative time")
-        plt.axvspan(ards_onset_time, ards_onset_time+ time_before_ARDS , alpha=0.3, color="red", label="ARDS time")
-        plt.legend()
-        plt.show()
-        # break
-    X_test = np.vstack((samples_before_ARDS, samples_after_ARDS))
-    y_test = np.hstack((np.zeros(samples_before_ARDS.shape[0]), np.ones(samples_after_ARDS.shape[0])))
+            # Positive samples: time is before ARDS onset, but time + window is after onset
+            elif time < ards_onset_time and time_plus_window > ards_onset_time:
+                diff_vector = to_diff(df_final.iloc[i:i+2])
+                positive_samples.append(diff_vector.values.flatten())  # Flatten to ensure 2D
 
-    y_test_pred = model.predict(X_test)
-    test_accuracy = accuracy_score(y_test, y_test_pred)
-    print(f'Testing Accuracy: {test_accuracy:.2f}')
+    # Convert lists of samples to numpy arrays
+    negative_samples = np.array(negative_samples)
+    positive_samples = np.array(positive_samples)
 
+    # Ensure that the arrays have the same number of dimensions (should be 2D)
+    if negative_samples.ndim != 2 or positive_samples.ndim != 2:
+        raise ValueError("Both negative and positive samples must be 2D arrays.")
 
+    # Stack the negative and positive samples for testing
+    X_test = np.vstack((negative_samples, positive_samples))
+    y_test = np.hstack((np.zeros(len(negative_samples)), np.ones(len(positive_samples))))
+
+    # Impute missing values using the imputer from training
+    X_test_imputed = imputer.transform(X_test)
+
+    # Scale features using the scaler from training
+    X_test_scaled = scaler.transform(X_test_imputed)
+
+    # Make predictions using the trained model
+    y_test_pred = model.predict(X_test_scaled)
+
+    # Print detailed classification report for the test set
+    print("Testing results:")
+    print(classification_report(y_test, y_test_pred))
+
+    # Plot ROC AUC curve
+    plot_roc_auc(model, X_test_scaled, y_test)
+
+# Function to plot ROC AUC curve
+def plot_roc_auc(model, X_test, y_test):
+    # Get the predicted probabilities for class 1 (positive class)
+    y_test_pred_proba = model.predict_proba(X_test)[:, 1]
+
+    # Compute False Positive Rate (FPR) and True Positive Rate (TPR)
+    fpr, tpr, thresholds = roc_curve(y_test, y_test_pred_proba)
+
+    # Compute AUC score
+    auc_score = roc_auc_score(y_test, y_test_pred_proba)
+
+    # Plot the ROC curve
+    plt.figure(figsize=(8, 6))
+    plt.plot(fpr, tpr, color='blue', label=f'ROC Curve (AUC = {auc_score:.2f})')
+    plt.plot([0, 1], [0, 1], color='gray', linestyle='--')  # Diagonal line for random guessing
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('ROC Curve')
+    plt.legend(loc='lower right')
+    plt.grid(True)
+    plt.show()
 
 if __name__ == "__main__":
-    time_before_ARDS = 4
-    time_after_ARDS = 12
+    time_window = 12  # Time window before/after ARDS onset
 
-    project_dir = "/home/julien/Documents/stage/data/MIMIC/cohorts_new"
-    patients_list_df = pd.read_csv(os.path.join(project_dir, "patients.csv"))
-    keys_to_keep = ["Heart Rate", "SpO2", "Respiratory Rate", "NBP Mean", "NBP [Systolic]", "NBP [Diastolic]",
-                    "Temperature F"]
-    # get_cohort(patients_list_df, keys_to_keep)
+    project_dir = "/home/julien/Documents/stage/data/MIMIC/full"
+    patients_list_df = pd.read_csv(os.path.join(project_dir, "patient_ARDS_df.csv"))
+
     cohort = pd.read_csv("cohort.csv")['subject_id'].values
     train_subjects, test_subjects = train_test_split(cohort, test_size=0.2, random_state=0)
 
-    # train_subjects = [train_subjects[0]]
-    # test_subjects = train_subjects
-    # print(len(train_subjects, test_subjects)
     print(f"Cohort loaded with {len(train_subjects)} training subjects and {len(test_subjects)} test subjects")
-    samples_before_ards, samples_after_ards = get_samples(train_subjects, patients_list_df, time_before_ARDS, time_after_ARDS)
-    np.save("samples_before.npy", samples_before_ards)
-    np.save("samples_after.npy", samples_after_ards)
 
-    samples_before_ards = np.load("samples_before.npy")
-    samples_after_ards = np.load("samples_after.npy")
-    print(f"{len(samples_before_ards)} samples before ARDS and {len(samples_after_ards)} samples after ARDS")
-    model = run_logistic_regression(samples_before_ards, samples_after_ards)
-    test_logisitc_regression(test_subjects, patients_list_df, model, time_before_ARDS, time_after_ARDS)
+    # Get training samples
+    negative_samples_train, positive_samples_train = get_samples_with_time_window(train_subjects, patients_list_df, time_window)
+
+    # Train the XGBoost model
+    model, imputer, scaler = run_xgboost_classifier(negative_samples_train, positive_samples_train)
+
+    # Test the model and plot ROC AUC curve
+    test_xgboost_classifier(test_subjects, patients_list_df, model, imputer, scaler, time_window)

@@ -91,14 +91,12 @@ def generate_patient_plot(patient, ARDS_onset_time, show, left_bar=None, right_b
     # return ax1
 
 
-def run_patient_preprocessing(patient:Patient, run_PCA=False, plot=False, columns_to_keep=None):
-    print(patient.subject_id)
-    limit_n_columns = True
-    if run_PCA:
-        limit_n_columns = False
+def run_patient_preprocessing(patient:Patient, run_PCA=False, limit_n_columns=False, plot=False, columns_to_keep=None, min_len_patient=0):
 
     df = patient.raw_df.copy()
-
+    if len(df) < min_len_patient:
+        patient.del_patient(f"df has len < {min_len_patient}")
+        return -1
     # print(list(df.columns))
     # print(columns_to_keep)
     columns_to_keep_in_df = []
@@ -111,9 +109,7 @@ def run_patient_preprocessing(patient:Patient, run_PCA=False, plot=False, column
 
     if columns_to_keep is not None:
         df = df[columns_to_keep_in_df + ["time"]]
-
         df = df.drop_duplicates(subset=columns_to_keep_in_df, keep="first")
-
     # df['row_number'] = df.cumcount()
 
     stay_duration = df["time"].iloc[-1]
@@ -130,7 +126,7 @@ def run_patient_preprocessing(patient:Patient, run_PCA=False, plot=False, column
         if re.search("F[iI]O2", key) is not None:
             FiO2_keys.append(key)
 
-    max_nan_percentage = 10
+    max_nan_percentage = 100
     columns_to_drop = [key for key, value in nan_percentage_patient.items() if value > max_nan_percentage]
     df = df.drop(columns_to_drop, axis=1).reset_index(drop=True)
 
@@ -178,16 +174,30 @@ def run_patient_preprocessing(patient:Patient, run_PCA=False, plot=False, column
     config["analysis_parameters"]["number_of_change_times"] = min_change_times
     # print(df)
     patient.save_config(config)
+    # print(df.columns)
     patient.save_processed_df(df)
 
 
 # @profile
-def run_patient_encounter(patient, plot=False, run_PCA=True):
+def run_patient_encounter(patient, plot=False, run_PCA=True, min_len_df = 0):
     # print(f"Starting patient : {patient.subject_id}, encounter {patient.hadm_id}")
+    try:
+        df = patient.get_processed_df()
+    except FileNotFoundError:
+        patient.del_patient(reason = "processed df was not found")
+        return -1
 
-    df = patient.get_processed_df()
-    df_interest_start = int(df["time"].iloc[0])
-    window_length_fit = max(min(5, len(df)), int(len(df) * 0.05))
+    if len(df) < min_len_df:
+        patient.del_patient(reason = f"len df < {min_len_df}")
+        return -1
+    try:
+        # df_interest_start = int(df["time"].iloc[0])
+        df_interest_start = 0
+    except KeyError:
+        patient.del_patient("no time key in df")
+        return -1
+
+    window_length_fit = max(1, int(len(df) * 0.05))
     # print(f"df_interest_start: {df_interest_start}, window_length: {window_length_fit}")
 
     non_medical_columns = ["index", "time"]
@@ -200,7 +210,7 @@ def run_patient_encounter(patient, plot=False, run_PCA=True):
     try:
         fit_data = scaler.fit_transform(fit_data)
     except ValueError:
-        warnings.warn(f"Skipping patient {patient.subject_id} encounter {patient.hadm_id} bc this fit data is invalid")
+        patient.del_patient("fit data is invalid")
         return 0
 
     df_final = pd.DataFrame(scaler.transform(df_patient_medical_data.copy()), columns=fit_keys)
@@ -293,7 +303,7 @@ def run_patient_encounter(patient, plot=False, run_PCA=True):
         plt.axvline(ARDS_onset_time, label="ARDS_onset_time", color="orange", linestyle="--")
 
     plt.plot(df["time"].iloc[idx_where_to_compute_score], scores, label="log_likelyhood")
-
+    # print(f"len df {len(df)}, df interest start {df_interest_start}, window length fit {window_length_fit}")
     # plt.axvline(ards_onset_time, color="r", label="ARDS onset time")
     plt.xlabel("time (hrs)")
     plt.ylabel("log_likelyhood")
@@ -336,7 +346,7 @@ def run_patient_encounter(patient, plot=False, run_PCA=True):
 
 # Define a function to process each patient
 def process_patient(row, project_dir, columns_to_keep):
-    print(row["subject_id"])
+    # print(row["subject_id"])
     patient = Patient.load(project_dir, str(row["subject_id"]), str(row["hadm_id"]))
     run_PCA = False
     run_patient_preprocessing(patient, run_PCA=run_PCA, columns_to_keep=columns_to_keep)
@@ -354,7 +364,7 @@ def main():
     #     [executor.submit(process_patient, row, project_dir, columns_to_keep) for _, row in patients_list_df.iterrows()]
 
     for index, row in patients_list_df.iterrows():
-        print(row["subject_id"])
+        # print(row["subject_id"])
         patient = Patient.load(project_dir, str(row["subject_id"]), str(row["hadm_id"]))
         run_PCA = False
         run_patient_preprocessing(patient, run_PCA=run_PCA, columns_to_keep=columns_to_keep)
@@ -363,22 +373,26 @@ def main():
     print(f"Total time : {time.time() - t}")
 
 if __name__ == "__main__":
-    project_dir = "/home/julien/Documents/stage/data/MIMIC/mini_test"
+    project_dir = "/home/julien/Documents/stage/data/MIMIC/full"
     patients_list_df = pd.read_csv(os.path.join(project_dir, "patients.csv"))
-    columns_to_keep = ["Heart Rate", "SpO2", "Respiratory Rate", "NBP Mean", "NBP [Systolic]", "NBP [Diastolic]",
-                    "Temperature F", 'PEEP Set', 'FiO2 Set', 'PAO2']
-
+    columns_to_keep = ["Heart Rate", "SpO2", "Respiratory Rate", "Arterial BP [Systolic]", "Arterial BP [Diastolic]",
+                             "Temperature F", 'PEEP Set', 'FiO2 Set', 'Arterial PaO2']
     t = time.time()
-    # with concurrent.futures.ThreadPoolExecutor() as executor:
-    #     [executor.submit(process_patient, row, project_dir, columns_to_keep) for _, row in patients_list_df.iterrows()]
-
+    # print(os.path.join(project_dir, "patients.csv"))
+    # patients_list_df = patients_list_df.iloc[:400]
+    # patients_list_df.to_csv(os.path.join(project_dir, "patients.csv"), index=False)
     for index, row in patients_list_df.iterrows():
-        # print(int(index)/len(patients_list_df)*100)
-        patient = Patient.load(project_dir, str(row["subject_id"]), str(row["hadm_id"]))
-        run_PCA = False
-        run_patient_preprocessing(patient, run_PCA=run_PCA, columns_to_keep=columns_to_keep)
-        run_patient_encounter(patient, plot=False, run_PCA=run_PCA)
-    # if __name__ == "__main__":
-    #     cProfile.run('main()', 'profile_output')
-    #     p = pstats.Stats('profile_output')
-    #     p.strip_dirs().sort_stats('time').print_stats(20)  # Print top 20 time-consuming lines
+        if index%100 == 0:
+            print(index)
+        patient = Patient.load(project_dir, str(int(row["subject_id"])), str(int(row["hadm_id"])))
+        if patient is not None:
+            run_PCA = False
+            run_patient_preprocessing(patient, run_PCA=run_PCA, columns_to_keep=columns_to_keep)
+            # run_patient_encounter(patient, plot=False, run_PCA=run_PCA)
+
+
+
+        # if __name__ == "__main__":
+        #     cProfile.run('main()', 'profile_output')
+        #     p = pstats.Stats('profile_output')
+        #     p.strip_dirs().sort_stats('time').print_stats(20)  # Print top 20 time-consuming lines
