@@ -94,9 +94,11 @@ if __name__ == '__main__':
     #     df_cohort = get_df_cohort(icd9_code, max_lim=None, batch_size=400, save_path=save_path)
 
     df_patients = pd.read_csv(os.path.join(save_path, "patients.csv"))
-
+    print(len(df_patients))
+    df_patients = df_patients.drop_duplicates(subset=["subject_id", "hadm_id"])
+    # print(len(df_patients))
     print(f"{len(df_patients)} patients in cohort")
-
+    #
     for index, row in df_patients.iterrows():
         try:
             if os.path.exists(os.path.join(save_path, str(int(row["subject_id"])), str(int(row["hadm_id"])))):
@@ -106,29 +108,30 @@ if __name__ == '__main__':
             #     print(index, "not exists, removing")
         except ValueError:
             print("Value error", index)
+
     print(f"{len(df_patients)} patients left to add")
-
-    def process_batch(i):
-        if i * batch_size >= max_lim:
-            return
-        get_info_cohort(df_patients["hadm_id"].iloc[i * batch_size:min((i + 1) * batch_size, max_lim)], save_path,
-                        globaldf_exists=True)
-
-    batch_size = 400
-    max_lim = None
-    if max_lim is None:
-        max_lim = len(df_patients)
-
-
-    print(f"Starting data download : {max_lim} patients, batch size {batch_size}, so {math.ceil(max_lim / batch_size)} batches")
-
-    for i in range(max_lim // batch_size + 1):
-        t = time.time()
-        process_batch(i)
-        # print(
-        #     f"Batch {i} finished in {time.time() - t} seconds, now there is a total of {len(os.listdir(save_path))-1} patients saved")
-
-    # print(os.listdir(save_path))
-    for hadm_id, subject_id in zip(df_patients["hadm_id"][:50], df_patients["subject_id"][:50]):
-        print(
-            f"{subject_id}, {int(hadm_id)} : {os.path.exists(os.path.join(save_path, str(int(subject_id)), str(int(hadm_id))))}")
+    #
+    # def process_batch(i):
+    #     if i * batch_size >= max_lim:
+    #         return
+    #     get_info_cohort(df_patients["hadm_id"].iloc[i * batch_size:min((i + 1) * batch_size, max_lim)], save_path,
+    #                     globaldf_exists=True)
+    #
+    # batch_size = 400
+    # max_lim = None
+    # if max_lim is None:
+    #     max_lim = len(df_patients)
+    #
+    #
+    # print(f"Starting data download : {max_lim} patients, batch size {batch_size}, so {math.ceil(max_lim / batch_size)} batches")
+    #
+    # for i in range(max_lim // batch_size + 1):
+    #     t = time.time()
+    #     process_batch(i)
+    #     # print(
+    #     #     f"Batch {i} finished in {time.time() - t} seconds, now there is a total of {len(os.listdir(save_path))-1} patients saved")
+    #
+    # # print(os.listdir(save_path))
+    # for hadm_id, subject_id in zip(df_patients["hadm_id"][:50], df_patients["subject_id"][:50]):
+    #     print(
+    #         f"{subject_id}, {int(hadm_id)} : {os.path.exists(os.path.join(save_path, str(int(subject_id)), str(int(hadm_id))))}")

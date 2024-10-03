@@ -19,13 +19,12 @@ def to_diff(df, mode="concat"):
     return df.drop("time", axis=1)
 
 # Function to get samples with a time window relative to ARDS onset
-def get_samples_with_time_window(subjects, patient_list_df, time_window):
-    project_dir = "/home/julien/Documents/stage/data/MIMIC/full"
+def get_samples_with_time_window(subjects, patient_list_df, time_window, project_dir):
     positive_samples = []
     negative_samples = []
 
-    for subject_id in subjects:
-        hadm_id = patient_list_df[patient_list_df["subject_id"] == subject_id]["hadm_id"].values[0]
+    for hadm_id in subjects:
+        subject_id = patient_list_df[patient_list_df["hadm_id"] == hadm_id]["subject_id"].values[0]
         patient = Patient.load(project_dir, str(subject_id), str(hadm_id))
         config = patient.get_existing_config()
         ards_onset_time = int(config["proxy_label"])
@@ -87,9 +86,10 @@ def run_xgboost_classifier(negative_samples, positive_samples):
         use_label_encoder=False,
         eval_metric='logloss',
         objective='binary:logistic',
-        n_estimators=2300,
+        n_estimators=10000,
         max_depth=5,
-        learning_rate=0.1
+        learning_rate=0.1,
+        early_stopping_rounds = 20,
     )
 
     # Train the model with early stopping on validation set
@@ -102,13 +102,12 @@ def run_xgboost_classifier(negative_samples, positive_samples):
     return model, imputer, scaler
 
 # Function to test the model and plot the ROC AUC curve
-def test_xgboost_classifier(subjects, patient_list_df, model, imputer, scaler, time_window):
-    project_dir = "/home/julien/Documents/stage/data/MIMIC/full"
+def xgboost_classifier_test(hadm_ids, patient_list_df, model, imputer, scaler, time_window, project_dir):
     positive_samples = []
     negative_samples = []
 
-    for subject_id in subjects:
-        hadm_id = patient_list_df[patient_list_df["subject_id"] == subject_id]["hadm_id"].values[0]
+    for hadm_id in hadm_ids:
+        subject_id = patient_list_df[patient_list_df["hadm_id"] == hadm_id]["subject_id"].values[0]
         patient = Patient.load(project_dir, str(subject_id), str(hadm_id))
         config = patient.get_existing_config()
         ards_onset_time = int(config["proxy_label"])
@@ -156,6 +155,50 @@ def test_xgboost_classifier(subjects, patient_list_df, model, imputer, scaler, t
     # Plot ROC AUC curve
     plot_roc_auc(model, X_test_scaled, y_test)
 
+# Function to test the model for one patient and plot prediction probabilities over time
+def plot_prediction_probabilities_for_patient(hadm_id, patient_list_df, model, imputer, scaler, time_window, project_dir):
+    # Find the subject ID and load patient data
+    subject_id = patient_list_df[patient_list_df["hadm_id"] == hadm_id]["subject_id"].values[0]
+    patient = Patient.load(project_dir, str(subject_id), str(hadm_id))
+    config = patient.get_existing_config()
+    ards_onset_time = int(config["proxy_label"])
+    df_final = patient.get_processed_df()
+
+    # Store the time and corresponding prediction probabilities
+    times = []
+    prediction_probs = []
+
+    for i in range(len(df_final) - 1):
+        time = df_final.iloc[i]["time"]
+        time_plus_window = time + time_window
+        diff_vector = to_diff(df_final.iloc[i:i+2])
+
+        # Append time to the time list
+        times.append(time)
+
+        # Preprocess the data: impute missing values and scale features
+        diff_vector = diff_vector.values.flatten().reshape(1, -1)
+        diff_vector_imputed = imputer.transform(diff_vector)
+        diff_vector_scaled = scaler.transform(diff_vector_imputed)
+
+        # Get the predicted probability for class 1 (positive ARDS onset)
+        y_pred_proba = model.predict_proba(diff_vector_scaled)[0, 1]
+
+        # Append the predicted probability to the prediction list
+        prediction_probs.append(y_pred_proba)
+
+    # Plot prediction probabilities over time
+    plt.figure(figsize=(10, 6))
+    plt.plot(times, prediction_probs, label="Prediction Probability")
+    plt.axvline(x=ards_onset_time, color='red', linestyle='--', label='ARDS Onset')
+    plt.xlabel('Time')
+    plt.ylabel('Prediction Probability')
+    plt.title(f'Prediction Probability Over Time for Patient {subject_id}')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+
 # Function to plot ROC AUC curve
 def plot_roc_auc(model, X_test, y_test):
     # Get the predicted probabilities for class 1 (positive class)
@@ -181,19 +224,29 @@ def plot_roc_auc(model, X_test, y_test):
 if __name__ == "__main__":
     time_window = 12  # Time window before/after ARDS onset
 
-    project_dir = "/home/julien/Documents/stage/data/MIMIC/full"
+    project_dir = "/home/julien/Documents/stage/data/MIMIC/final"
     patients_list_df = pd.read_csv(os.path.join(project_dir, "patient_ARDS_df.csv"))
 
-    cohort = pd.read_csv("cohort.csv")['subject_id'].values
+    # print(len(patients_list_df))
+    # patients_list_df = patients_list_df.drop_duplicates(subset=["subject_id"])
+    # print(len(patients_list_df))
+
+    # cohort = pd.read_csv("cohort.csv")['subject_id'].values
+
+    cohort = patients_list_df['hadm_id'][:200]
     train_subjects, test_subjects = train_test_split(cohort, test_size=0.2, random_state=0)
 
     print(f"Cohort loaded with {len(train_subjects)} training subjects and {len(test_subjects)} test subjects")
 
     # Get training samples
-    negative_samples_train, positive_samples_train = get_samples_with_time_window(train_subjects, patients_list_df, time_window)
+    negative_samples_train, positive_samples_train = get_samples_with_time_window(train_subjects, patients_list_df, time_window, project_dir)
 
     # Train the XGBoost model
     model, imputer, scaler = run_xgboost_classifier(negative_samples_train, positive_samples_train)
 
     # Test the model and plot ROC AUC curve
-    test_xgboost_classifier(test_subjects, patients_list_df, model, imputer, scaler, time_window)
+    xgboost_classifier_test(test_subjects, patients_list_df, model, imputer, scaler, time_window, project_dir)
+    for i in range(100):
+        hadm_id_to_test = test_subjects.iloc[i]
+        plot_prediction_probabilities_for_patient(hadm_id_to_test, patients_list_df, model, imputer, scaler, time_window,
+                                              project_dir)

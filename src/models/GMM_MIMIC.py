@@ -373,7 +373,7 @@ def main():
     print(f"Total time : {time.time() - t}")
 
 if __name__ == "__main__":
-    project_dir = "/home/julien/Documents/stage/data/MIMIC/full"
+    project_dir = "/home/julien/Documents/stage/data/MIMIC/final"
     patients_list_df = pd.read_csv(os.path.join(project_dir, "patients.csv"))
     columns_to_keep = ["Heart Rate", "SpO2", "Respiratory Rate", "Arterial BP [Systolic]", "Arterial BP [Diastolic]",
                              "Temperature F", 'PEEP Set', 'FiO2 Set', 'Arterial PaO2']

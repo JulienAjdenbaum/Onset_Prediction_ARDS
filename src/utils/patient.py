@@ -150,7 +150,7 @@ class Patient:
 
             with open(os.path.join(root_dir, subject_id, hadm_id, "patient_info.json"), "r") as f:
                 patient_info = json.load(f)
-        except FileNotFoundError:
+        except (FileNotFoundError, json.decoder.JSONDecodeError):
             csv_path = os.path.join(root_dir, "patients.csv")
             df_patients = pd.read_csv(csv_path)
             # Ensure both df_patients['hadm_id'] and hadm_id are treated consistently as floats and then ints
