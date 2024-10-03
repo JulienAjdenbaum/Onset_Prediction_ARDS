@@ -30,7 +30,10 @@ def get_label_by_proxies(patient):
     # print(labels)
     if len(labels) == 0:
         return -1
-    return labels[0][0]
+    # print(labels[0][0])
+    label = df["time"].iloc[labels[0][0]]
+    print(df["time"].min(), df["time"].max(), label)
+    return label
 
 
 if __name__ == "__main__":
@@ -44,14 +47,14 @@ if __name__ == "__main__":
     for index, row in patients_list_df.iterrows():
         patient = Patient.load(project_dir, str(int(row["subject_id"])), str(int(row["hadm_id"])))
         # try:
-        print(row["subject_id"], row["hadm_id"])
+        # print(row["subject_id"], row["hadm_id"])
         label = get_label_by_proxies(patient)
         labels.append(label)
         if label != -1:
             config = patient.get_existing_config()
             config["proxy_label"] = str(label)
             patient.save_config(config)
-            print("config_saved")
+            # print("config_saved")
             patient_ARDS_df = pd.concat(
                 [patient_ARDS_df, pd.DataFrame({"subject_id": [patient.subject_id], "hadm_id": [patient.hadm_id]})])
 

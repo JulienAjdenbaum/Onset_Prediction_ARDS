@@ -27,13 +27,12 @@ def get_samples_with_time_window(subjects, patient_list_df, time_window, project
         subject_id = patient_list_df[patient_list_df["hadm_id"] == hadm_id]["subject_id"].values[0]
         patient = Patient.load(project_dir, str(subject_id), str(hadm_id))
         config = patient.get_existing_config()
-        ards_onset_time = int(config["proxy_label"])
+        ards_onset_time = float(config["proxy_label"])
         df_final = patient.get_processed_df()
 
         for i in range(len(df_final) - 1):
-            time = df_final.iloc[i]["time"]
+            time = float(df_final.iloc[i]["time"])
             time_plus_window = time + time_window
-
             # Negative samples: both time and time + window are before ARDS onset
             if time_plus_window < ards_onset_time:
                 diff_vector = to_diff(df_final.iloc[i:i+2])
@@ -110,7 +109,7 @@ def xgboost_classifier_test(hadm_ids, patient_list_df, model, imputer, scaler, t
         subject_id = patient_list_df[patient_list_df["hadm_id"] == hadm_id]["subject_id"].values[0]
         patient = Patient.load(project_dir, str(subject_id), str(hadm_id))
         config = patient.get_existing_config()
-        ards_onset_time = int(config["proxy_label"])
+        ards_onset_time = float(config["proxy_label"])
         df_final = patient.get_processed_df()
 
         for i in range(len(df_final) - 1):
@@ -161,7 +160,7 @@ def plot_prediction_probabilities_for_patient(hadm_id, patient_list_df, model, i
     subject_id = patient_list_df[patient_list_df["hadm_id"] == hadm_id]["subject_id"].values[0]
     patient = Patient.load(project_dir, str(subject_id), str(hadm_id))
     config = patient.get_existing_config()
-    ards_onset_time = int(config["proxy_label"])
+    ards_onset_time = float(config["proxy_label"])
     df_final = patient.get_processed_df()
 
     # Store the time and corresponding prediction probabilities
