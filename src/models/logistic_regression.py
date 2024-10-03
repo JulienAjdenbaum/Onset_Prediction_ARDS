@@ -9,14 +9,82 @@ import matplotlib.pyplot as plt
 from imblearn.over_sampling import SMOTE
 from collections import Counter
 import os
+from multiprocessing import Pool
+
+# Assuming the Patient class is defined in src.utils.patient
 from src.utils.patient import Patient
+
 
 # Function to get processed patient data as difference vectors
 def to_diff(df, mode="concat"):
-    df_diff = df.diff()[1:]
+    df_diff = df.diff().iloc[1:]
+    df_no_time = df.drop(columns='time').iloc[1:]
+    df_diff_no_time = df_diff.drop(columns='time')
     if mode == "concat":
-        return pd.concat([df.drop("time", axis=1)[1:], df_diff.drop("time", axis=1).div(df_diff.time, axis=0)], axis=1)
-    return df.drop("time", axis=1)
+        return pd.concat([df_no_time, df_diff_no_time.div(df_diff['time'].values, axis=0)], axis=1)
+    return df_no_time
+
+
+def load_all_patients(hadm_ids, patient_list_df, project_dir):
+    patients_data = {}
+    for hadm_id in hadm_ids:
+        subject_id = patient_list_df.loc[patient_list_df["hadm_id"] == hadm_id, "subject_id"].values[0]
+        patient = Patient.load(project_dir, str(subject_id), str(hadm_id))
+        patients_data[hadm_id] = {
+            'patient': patient,
+            'config': patient.get_existing_config(),
+            'df_final': patient.get_processed_df()
+        }
+    return patients_data
+
+
+def process_patient_samples(args):
+    hadm_id, data, time_window = args
+    positive_samples = []
+    negative_samples = []
+    ards_onset_time = float(data['config']["proxy_label"])
+    df_final = data['df_final']
+
+    times = df_final['time'].values[:-1]
+    time_plus_window = times + time_window
+
+    negative_mask = (time_plus_window < ards_onset_time)
+    positive_mask = (times < ards_onset_time) & (time_plus_window > ards_onset_time)
+
+    indices = np.arange(len(times))
+    negative_indices = indices[negative_mask]
+    positive_indices = indices[positive_mask]
+
+    # Compute differences once
+    df_diff = df_final.diff().iloc[1:]
+    df_no_time = df_final.drop(columns='time').iloc[1:]
+    df_diff_no_time = df_diff.drop(columns='time')
+    diff_vectors = pd.concat([df_no_time, df_diff_no_time.div(df_diff['time'].values, axis=0)], axis=1).values
+
+    # Collect negative samples
+    negative_samples.extend(diff_vectors[negative_indices])
+    # Collect positive samples
+    positive_samples.extend(diff_vectors[positive_indices])
+
+    return negative_samples, positive_samples
+
+
+def extract_samples_parallel(hadm_ids, patients_data, time_window):
+    with Pool() as pool:
+        args = [(hadm_id, patients_data[hadm_id], time_window) for hadm_id in hadm_ids]
+        results = pool.map(process_patient_samples, args)
+
+    negative_samples = []
+    positive_samples = []
+    for neg_samples, pos_samples in results:
+        negative_samples.extend(neg_samples)
+        positive_samples.extend(pos_samples)
+
+    negative_samples = np.array(negative_samples)
+    positive_samples = np.array(positive_samples)
+
+    return negative_samples, positive_samples
+
 
 def preprocess_data(X_train=None, X_test=None, imputer=None, scaler=None):
     # Impute missing values
@@ -57,46 +125,15 @@ def preprocess_data(X_train=None, X_test=None, imputer=None, scaler=None):
 
     return X_train_scaled, X_test_scaled, imputer, scaler
 
-def extract_samples(hadm_ids, patient_list_df, time_window, project_dir):
-    positive_samples = []
-    negative_samples = []
-    times_list = []  # Optional: to store time points if needed
-
-    for hadm_id in hadm_ids:
-        subject_id = patient_list_df[patient_list_df["hadm_id"] == hadm_id]["subject_id"].values[0]
-        patient = Patient.load(project_dir, str(subject_id), str(hadm_id))
-        config = patient.get_existing_config()
-        ards_onset_time = float(config["proxy_label"])
-        df_final = patient.get_processed_df()
-
-        for i in range(len(df_final) - 1):
-            time = df_final.iloc[i]["time"]
-            time_plus_window = time + time_window
-
-            # Negative samples: both time and time + window are before ARDS onset
-            if time_plus_window < ards_onset_time:
-                diff_vector = to_diff(df_final.iloc[i:i+2])
-                negative_samples.append(diff_vector.values.flatten())  # Flatten to ensure 2D
-
-            # Positive samples: time is before ARDS onset, but time + window is after onset
-            elif time < ards_onset_time and time_plus_window > ards_onset_time:
-                diff_vector = to_diff(df_final.iloc[i:i+2])
-                positive_samples.append(diff_vector.values.flatten())  # Flatten to ensure 2D
-
-            # Optionally collect times if needed
-            # times_list.append(time)  # Removed since not needed here
-
-    # Convert lists of samples to numpy arrays
-    negative_samples = np.array(negative_samples)
-    positive_samples = np.array(positive_samples)
-
-    return negative_samples, positive_samples
 
 # Function to train the XGBoost classifier with preprocessing
 def run_xgboost_classifier(train_subjects, patient_list_df, time_window, project_dir):
+    # Load all patient data
+    patients_data = load_all_patients(train_subjects, patient_list_df, project_dir)
+
     # Extract samples using the new function
-    negative_samples_train, positive_samples_train = extract_samples(
-        train_subjects, patient_list_df, time_window, project_dir
+    negative_samples_train, positive_samples_train = extract_samples_parallel(
+        train_subjects, patients_data, time_window
     )
 
     X = np.vstack((negative_samples_train, positive_samples_train))
@@ -115,31 +152,36 @@ def run_xgboost_classifier(train_subjects, patient_list_df, time_window, project
     # Print class distribution after SMOTE
     print('Resampled dataset shape %s' % Counter(y_train_resampled))
 
-    # Define the XGBoost classifier
+    # Define the XGBoost classifier with optimized parameters
     model = XGBClassifier(
         use_label_encoder=False,
         eval_metric='logloss',
         objective='binary:logistic',
-        n_estimators=10000,
+        n_estimators=500,  # Reduced from 10000
         max_depth=5,
         learning_rate=0.1,
-        early_stopping_rounds=50,
+        early_stopping_rounds=40,
+        verbosity=0  # Set verbosity to 0 to disable printing
     )
 
     # Train the model with early stopping on validation set
     model.fit(
         X_train_resampled, y_train_resampled,
-        eval_set=[(X_val_preprocessed, y_val)],  # Validation set for early stopping
-        verbose=True
+        eval_set=[(X_val_preprocessed, y_val)],
+        verbose=False
     )
 
     return model, imputer, scaler
 
+
 # Function to test the model and plot the ROC AUC curve
 def xgboost_classifier_test(test_subjects, patient_list_df, model, imputer, scaler, time_window, project_dir):
+    # Load all patient data
+    patients_data = load_all_patients(test_subjects, patient_list_df, project_dir)
+
     # Extract samples using the new function
-    negative_samples_test, positive_samples_test = extract_samples(
-        test_subjects, patient_list_df, time_window, project_dir
+    negative_samples_test, positive_samples_test = extract_samples_parallel(
+        test_subjects, patients_data, time_window
     )
 
     # Ensure that the arrays have the same number of dimensions (should be 2D)
@@ -163,6 +205,7 @@ def xgboost_classifier_test(test_subjects, patient_list_df, model, imputer, scal
     # Plot ROC AUC curve
     plot_roc_auc(model, X_test_preprocessed, y_test)
 
+
 # Function to plot ROC AUC curve
 def plot_roc_auc(model, X_test, y_test):
     # Get the predicted probabilities for class 1 (positive class)
@@ -185,62 +228,56 @@ def plot_roc_auc(model, X_test, y_test):
     plt.grid(True)
     plt.show()
 
+
 # Function to extract samples and times for a single patient
-def extract_samples_for_patient(hadm_id, patient_list_df, time_window, project_dir):
-    positive_samples = []
-    negative_samples = []
+def extract_samples_for_patient(hadm_id, patient_data, time_window):
+    samples = []
     times = []
 
-    subject_id = patient_list_df[patient_list_df["hadm_id"] == hadm_id]["subject_id"].values[0]
-    patient = Patient.load(project_dir, str(subject_id), str(hadm_id))
-    config = patient.get_existing_config()
-    ards_onset_time = float(config["proxy_label"])
-    df_final = patient.get_processed_df()
+    data = patient_data
+    ards_onset_time = float(data['config']["proxy_label"])
+    df_final = data['df_final']
 
-    for i in range(len(df_final) - 1):
-        time = df_final.iloc[i]["time"]
-        time_plus_window = time + time_window
-        diff_vector = to_diff(df_final.iloc[i:i + 2])
+    times_array = df_final['time'].values[:-1]
+    indices = np.arange(len(times_array))
 
-        # Negative samples: both time and time + window are before ARDS onset
-        if time_plus_window < ards_onset_time:
-            negative_samples.append(diff_vector.values.flatten())  # Flatten to ensure 2D
-            # Store the time
-            times.append(time)
-        # Positive samples: time is before ARDS onset, but time + window is after onset
-        elif time < ards_onset_time and time_plus_window > ards_onset_time:
-            positive_samples.append(diff_vector.values.flatten())  # Flatten to ensure 2D
-            # Store the time
-            times.append(time)
+    # Compute differences once
+    df_diff = df_final.diff().iloc[1:]
+    df_no_time = df_final.drop(columns='time').iloc[1:]
+    df_diff_no_time = df_diff.drop(columns='time')
+    diff_vectors = pd.concat([df_no_time, df_diff_no_time.div(df_diff['time'].values, axis=0)], axis=1).values
 
-    # Convert lists of samples to numpy arrays
-    negative_samples = np.array(negative_samples)
-    positive_samples = np.array(positive_samples)
+    # Collect all samples and times
+    samples.extend(diff_vectors)
+    times.extend(times_array)
+
+    samples = np.array(samples)
     times = np.array(times)
 
-    return negative_samples, positive_samples, times, ards_onset_time
+    return samples, times, ards_onset_time
+
 
 # Function to plot prediction probabilities over time for one patient
 def plot_prediction_probabilities_for_patient(hadm_id, patient_list_df, model, imputer, scaler, time_window,
                                               project_dir):
+    # Load patient data
+    patients_data = load_all_patients([hadm_id], patient_list_df, project_dir)
+    patient_data = patients_data[hadm_id]
+
     # Extract samples and times for the patient
-    negative_samples, positive_samples, times, ards_onset_time = extract_samples_for_patient(
-        hadm_id, patient_list_df, time_window, project_dir
+    samples, times, ards_onset_time = extract_samples_for_patient(
+        hadm_id, patient_data, time_window
     )
 
-    # Combine samples and create labels (0 for negative, 1 for positive)
-    X = np.vstack((negative_samples, positive_samples))
-    y = np.hstack((np.zeros(len(negative_samples)), np.ones(len(positive_samples))))
-
     # Preprocess the data
-    _, X_preprocessed, _, _ = preprocess_data(X_train=None, X_test=X, imputer=imputer, scaler=scaler)
+    _, X_preprocessed, _, _ = preprocess_data(X_train=None, X_test=samples, imputer=imputer, scaler=scaler)
 
     # Get the predicted probabilities for class 1 (positive class)
     y_pred_proba = model.predict_proba(X_preprocessed)[:, 1]
 
     # Debugging prints
     print(f"Number of times: {len(times)}")
-    print(f"Number of samples: {X.shape[0]}")
+    print(f"Number of samples: {samples.shape[0]}")
     print(f"Number of predictions: {len(y_pred_proba)}")
 
     # Sort times and predictions together for plotting
@@ -260,7 +297,8 @@ def plot_prediction_probabilities_for_patient(hadm_id, patient_list_df, model, i
     plt.grid(True)
     plt.show()
 
-if __name__ == "__main__":
+
+def main():
     time_window = 12  # Time window before/after ARDS onset
 
     project_dir = "/home/julien/Documents/stage/data/MIMIC/final"
@@ -281,9 +319,13 @@ if __name__ == "__main__":
         test_subjects, patients_list_df, model, imputer, scaler, time_window, project_dir
     )
 
-    # Plot prediction probabilities over time for one patient
     for i in range(100):
+        # Plot prediction probabilities over time for one patient
         hadm_id_to_test = test_subjects.iloc[i]  # Choose the first patient from the test set
         plot_prediction_probabilities_for_patient(
             hadm_id_to_test, patients_list_df, model, imputer, scaler, time_window, project_dir
         )
+
+
+if __name__ == "__main__":
+    main()
