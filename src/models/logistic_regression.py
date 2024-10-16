@@ -158,7 +158,7 @@ def run_xgboost_classifier(train_subjects, patient_list_df, time_window, project
         eval_metric='logloss',
         objective='binary:logistic',
         n_estimators=500,  # Reduced from 10000
-        max_depth=5,
+        max_depth=10,
         learning_rate=0.1,
         early_stopping_rounds=40,
         verbosity=0  # Set verbosity to 0 to disable printing
