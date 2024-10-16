@@ -139,17 +139,6 @@ if __name__ == "__main__":
     critical_measurements = ["Heart Rate", "SpO2", "Respiratory Rate", "Arterial BP [Systolic]", "Arterial BP [Diastolic]",
                              "Temperature F", 'PEEP Set', 'FiO2 Set', 'Arterial PaO2']
 
-    # if os.path.exists(os.path.join(project_dir, "patients.csv")):
-    #     os.remove(os.path.join(project_dir, "patients.csv"))
-    #     patients_list_df = create_patient_df()
-    # else:
-    #     if not os.path.exists(os.path.join(project_dir)):
-    #         os.mkdir(project_dir)
-    #     patients_list_df = create_patient_df()
-
-    # if os.path.exists(project_dir):
-    #     shutil.rmtree(project_dir)
-
     os.mkdir(project_dir)
 
     patients_list_df = create_patient_df()
