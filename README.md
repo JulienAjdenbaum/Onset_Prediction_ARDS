@@ -10,3 +10,4 @@ Development in progress as of Oct 2024
 
 A requirements.txt is included in the root dir. <br>
 The db sources need to be updated according to MIMIC III reference, in utils. <br>
+The script to run is: src/main.py
