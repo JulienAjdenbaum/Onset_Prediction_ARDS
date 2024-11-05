@@ -15,114 +15,145 @@ from multiprocessing import Pool
 from src.utils.patient import Patient
 
 
-# Function to get processed patient data as difference vectors
+# Function to transform patient data into difference vectors, representing rate of change between time points
 def to_diff(df, mode="concat"):
+    # Compute the difference between consecutive rows for all columns
     df_diff = df.diff().iloc[1:]
+    # Remove the 'time' column from the original and difference dataframes
     df_no_time = df.drop(columns='time').iloc[1:]
     df_diff_no_time = df_diff.drop(columns='time')
+
+    # Concatenate the original data without 'time' with normalized difference vectors if mode is "concat"
     if mode == "concat":
         return pd.concat([df_no_time, df_diff_no_time.div(df_diff['time'].values, axis=0)], axis=1)
     return df_no_time
 
 
+# Function to load all specified patients' data into a dictionary
 def load_all_patients(hadm_ids, patient_list_df, project_dir):
     patients_data = {}
+    # Iterate over each hospital admission ID
     for hadm_id in hadm_ids:
+        # Get subject ID corresponding to the hadm_id
         subject_id = patient_list_df.loc[patient_list_df["hadm_id"] == hadm_id, "subject_id"].values[0]
+        # Load the patient object
         patient = Patient.load(project_dir, str(subject_id), str(hadm_id))
+        # Store patient data in dictionary
         patients_data[hadm_id] = {
             'patient': patient,
-            'config': patient.get_existing_config(),
-            'df_final': patient.get_processed_df()
+            'config': patient.get_existing_config(),  # Retrieve and store patient configuration
+            'df_final': patient.get_processed_df()  # Retrieve and store processed data for analysis
         }
     return patients_data
 
 
+# Function to process a single patient sample, categorizing data points as positive or negative based on ARDS onset
 def process_patient_samples(args):
-    hadm_id, data, time_window = args
+    hadm_id, data, time_window = args  # Unpack function arguments
     positive_samples = []
     negative_samples = []
-    ards_onset_time = float(data['config']["proxy_label"])
+    ards_onset_time = float(data['config']["proxy_label"])  # Get ARDS onset time from config
     df_final = data['df_final']
 
+    # Compute the time window for each measurement
     times = df_final['time'].values[:-1]
     time_plus_window = times + time_window
 
-    negative_mask = (time_plus_window < ards_onset_time)
-    positive_mask = (times < ards_onset_time) & (time_plus_window > ards_onset_time)
+    # Create masks for identifying positive and negative samples relative to ARDS onset
+    negative_mask = (time_plus_window < ards_onset_time)  # Before ARDS onset
+    positive_mask = (times < ards_onset_time) & (time_plus_window > ards_onset_time)  # Surrounding ARDS onset
 
+    # Get indices of positive and negative samples
     indices = np.arange(len(times))
     negative_indices = indices[negative_mask]
     positive_indices = indices[positive_mask]
 
-    # Compute differences once
+    # Compute difference vectors once for efficiency
     df_diff = df_final.diff().iloc[1:]
     df_no_time = df_final.drop(columns='time').iloc[1:]
     df_diff_no_time = df_diff.drop(columns='time')
+    # Concatenate original and normalized difference data to form feature vectors
     diff_vectors = pd.concat([df_no_time, df_diff_no_time.div(df_diff['time'].values, axis=0)], axis=1).values
 
-    # Collect negative samples
+    # Collect negative samples based on indices
     negative_samples.extend(diff_vectors[negative_indices])
-    # Collect positive samples
+    # Collect positive samples based on indices
     positive_samples.extend(diff_vectors[positive_indices])
 
-    return negative_samples, positive_samples
+    return negative_samples, positive_samples  # Return categorized samples
 
 
+# Function to extract samples in parallel across multiple patient records
 def extract_samples_parallel(hadm_ids, patients_data, time_window):
+    # Prepare arguments for parallel processing, where each argument contains patient data and the time window
     with Pool() as pool:
         args = [(hadm_id, patients_data[hadm_id], time_window) for hadm_id in hadm_ids]
+        # Use multiprocessing to run `process_patient_samples` in parallel on each patient
         results = pool.map(process_patient_samples, args)
 
+    # Initialize lists to collect samples
     negative_samples = []
     positive_samples = []
+
+    # Aggregate results from each patient, appending negative and positive samples
     for neg_samples, pos_samples in results:
         negative_samples.extend(neg_samples)
         positive_samples.extend(pos_samples)
 
+    # Convert lists of samples into numpy arrays for easy handling
     negative_samples = np.array(negative_samples)
     positive_samples = np.array(positive_samples)
 
-    return negative_samples, positive_samples
+    return negative_samples, positive_samples  # Return arrays of negative and positive samples
 
 
+# Function to preprocess data by imputing missing values and scaling features
 def preprocess_data(X_train=None, X_test=None, imputer=None, scaler=None):
-    # Impute missing values
+    # Impute missing values in training and testing data
     if imputer is None:
+        # Initialize imputer if not provided, using mean strategy
         imputer = SimpleImputer(strategy='mean')
+        # Fit imputer on training data and transform if training data is provided
         if X_train is not None:
             X_train_imputed = imputer.fit_transform(X_train)
         else:
             X_train_imputed = None
     else:
+        # Use provided imputer to transform training data if provided
         if X_train is not None:
             X_train_imputed = imputer.transform(X_train)
         else:
             X_train_imputed = None
 
+    # Impute missing values in test data using the same imputer
     if X_test is not None:
         X_test_imputed = imputer.transform(X_test)
     else:
         X_test_imputed = None
 
-    # Scale features
+    # Scale features for training and testing data
     if scaler is None:
+        # Initialize scaler if not provided
         scaler = StandardScaler()
+        # Fit scaler on imputed training data and transform if training data is available
         if X_train_imputed is not None:
             X_train_scaled = scaler.fit_transform(X_train_imputed)
         else:
             X_train_scaled = None
     else:
+        # Use provided scaler to transform training data if available
         if X_train_imputed is not None:
             X_train_scaled = scaler.transform(X_train_imputed)
         else:
             X_train_scaled = None
 
+    # Scale test data using the same scaler
     if X_test_imputed is not None:
         X_test_scaled = scaler.transform(X_test_imputed)
     else:
         X_test_scaled = None
 
+    # Return scaled training and test data along with the imputer and scaler used
     return X_train_scaled, X_test_scaled, imputer, scaler
 
 
